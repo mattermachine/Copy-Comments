@@ -1,9 +1,9 @@
 /**
- * On opening of the document, add an item "Copy" which calls func go, onClick
+ * On opening of the document, add an item "Copy" which calls func start, onClick
  */
 function onOpen(e) {
-  DocumentApp.getUi().createAddonMenu()
-      .addItem('Copy Comments', 'go')
+  SpreadsheetApp.getUi().createAddonMenu()
+      .addItem('Copy Comments', 'start')
       .addToUi();
 }
 
@@ -19,39 +19,114 @@ function onInstall(e) {
  * ------------------------------------------------------------------------------------- *
  */
 
-/**
- * Runs the code
- * -Resets the URL property
- * -Calls function to create a copy of the document
- * -Calls function to get sets of 100 comments until all comments have been retrieved
- * -Calls function to append these comments and their replies
- * -Sets the URL property
- * -Calls the URL Dialog pop up
- */
-function go(){
-  var documentProperties = PropertiesService.getDocumentProperties();
-  documentProperties.deleteAllProperties();
-  documentProperties.deleteProperty("URL");
-  
-  var id = getNewDocId();
-  var oldId = DocumentApp.getActiveDocument().getId();
-  var pageToken = "";
-  
-  var props = {};
-  props["pageToken"] = "";
-  props["id"] = id;
-  props["oldId"] = oldId;
-  
-  documentProperties.setProperties(props);
-  
-  pickUpFromLeftOff();
-}
+
+var SECOND = 1000;
+var MINUTE = 60*SECOND;
+var MAX_RUNNING_TIME = 4*MINUTE;
+var TIME_TO_WAIT = 1.2*MINUTE;
 
 /**
- * Returns comments in sets of 100
- * /Takes in the documentID and a reference to which set of 100 comments to retrieve
+ * Run this on a GDrive Copy Log sheet
+ */
+function start() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+
+  // Cell G2 holds track of which doc comments are being copied of.
+  // This allows us to re-run the scrip multiple times without redoing docs already done,
+  // and hand edit the counter if necessary.
+  // var activeRow = sheet.getRange("G2:G2").getCell(1, 1).getValue();
+  var activeRow = sheet.getRange("G2").getValue();
+
+  var documentProperties = PropertiesService.getDocumentProperties();
+  // documentProperties.deleteAllProperties();
+
+  var props = {};
+  props["pageToken"] = "";
+  //props["activeRow"] = activeRow;
+
+  documentProperties.setProperties(props);
+  Logger.log(documentProperties);
+
+  resume();
+}
+
+
+function resume(){
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
+  var documentProperties = PropertiesService.getDocumentProperties();
+  var props = documentProperties.getProperties();
+  var pageToken = props["pageToken"];
+  //var activeRow = props["activeRow"];
+  var activeRow = sheet.getRange("G2").getValue();
+  var docRows = sheet.getRange("D5:G1000")
+  var id = docRows.getCell(activeRow, 1).getValue();
+  var oldId = docRows.getCell(activeRow, 2).getValue();
+
+  if (oldId == "") {
+    return;
+  }
+
+  if (DriveApp.getFileById(id).getMimeType() == "application/vnd.google-apps.folder") {
+    docRows.getCell(activeRow, 4).setValue("folder");
+    sheet.getRange("G2").setValue(activeRow+1);
+    resume();
+    return;
+  }
+
+
+  var startTime = (new Date()).getTime();
+  var comments = [];
+
+  if(pageToken == "undefined"){
+    appendCommentsAndReplies(id, comments);
+    docRows.getCell(activeRow, 4).setValue("done");
+    sheet.getRange("G2").setValue(activeRow+1);
+    props["pageToken"] = "";
+    documentProperties.setProperties(props);
+    resume();
+    return;
+  }
+
+  do
+  {
+    var commentRes = getComments(oldId, pageToken);
+    comments = comments.concat(commentRes.items);
+    pageToken = commentRes.nextPageToken;
+    var currTime = (new Date()).getTime();
+    if(currTime - startTime > MAX_RUNNING_TIME){
+      var properties = {};
+      if(pageToken == undefined){
+        pageToken = "undefined";
+      }
+      properties["pageToken"] = pageToken;
+      properties["newDocId"] = id;
+      documentProperties.setProperties(properties);
+      appendCommentsAndReplies(id, comments);
+      var endTime = (new Date()).getTime();
+      ScriptApp.newTrigger("resume")
+               .timeBased()
+               .at(new Date(endTime+TIME_TO_WAIT))
+               .create();
+      return;
+    }
+  }
+  while (pageToken != undefined);
+
+  appendCommentsAndReplies(id, comments);
+  docRows.getCell(activeRow, 4).setValue("copied " + comments.length + " comments");
+  sheet.getRange("G2").setValue(activeRow+1);
+  props["pageToken"] = "";
+  documentProperties.setProperties(props);
+  resume();
+}
+
+
+
+/**
+ * Returns comments in sets of 50
+ * /Takes in the documentID and a reference to which set of 50 comments to retrieve
  * -Set optional arguments of the list of comments
- * -If there is a pageToken(reference to the next set of 100 comments), then set that argument
+ * -If there is a pageToken(reference to the next set of 50 comments), then set that argument
  */
 function getComments(docId, prevToken) {
   var optionalArgs = {};
@@ -64,28 +139,6 @@ function getComments(docId, prevToken) {
   return comments;
 }
 
-function no(){
- var docId = DocumentApp.getActiveDocument().getId();
-var docFile = DriveApp.getFileById(docId);
-var newFile = docFile.makeCopy();
-var newId = newFile.getId();
-var commentRes = Drive.Comments.list(docId).items;
-for( var each in commentRes){
-   Drive.Comments.insert(commentRes[each], newId);
-} 
-}
-
-/**
- * Makes a copy of the document and returns the ID of the copied document
- */
-function getNewDocId(){ 
-  var docApp = DocumentApp.getActiveDocument();
-  var docId = docApp.getId();
-  var docFile = DriveApp.getFileById(docId);
-  var newFile = docFile.makeCopy();
-  var newId = newFile.getId();
-  return newId;
-}
 
 /**
  * Appends the comments
@@ -121,121 +174,5 @@ function appendCommentsAndReplies(id, comments){
       }
     }
   }
-}
-
-var SECOND = 1000;
-var MINUTE = 60*SECOND;
-var MAX_RUNNING_TIME = 4*MINUTE;
-var TIME_TO_WAIT = 1.2*MINUTE;
-
-function pickUpFromLeftOff(){
-  var documentProperties = PropertiesService.getDocumentProperties();
-  var props = documentProperties.getProperties();
-  var pageToken = props["pageToken"];
-  var id = props["id"];
-  var oldId = props["oldId"];
-  var startTime = (new Date()).getTime();
-  var comments = [];
-  
-  if(pageToken == "undefined"){
-    appendCommentsAndReplies(id, comments);
-    documentProperties.setProperty("URL", DocumentApp.openById(id).getUrl());
-    urlDialog();
-    return;
-  }
-  
-  do{
-    var commentRes = getComments(oldId, pageToken);
-    comments = comments.concat(commentRes.items);
-    pageToken = commentRes.nextPageToken;
-    var currTime = (new Date()).getTime();
-    if(currTime - startTime > MAX_RUNNING_TIME){
-      var properties = {};
-      if(pageToken == undefined){
-        pageToken = "undefined";
-      }
-      properties["pageToken"] = pageToken;
-      properties["newDocId"] = id;
-      documentProperties.setProperties(properties);
-      appendCommentsAndReplies(id, comments);
-      var endTime = (new Date()).getTime();
-      ScriptApp.newTrigger("pickUpFromLeftOff")
-               .timeBased()
-               .at(new Date(endTime+TIME_TO_WAIT))
-               .create();
-      return;
-    }
-  }while(pageToken != undefined);
-  appendCommentsAndReplies(id, comments);
-  documentProperties.setProperty("URL", DocumentApp.openById(id).getUrl());
-  urlDialog();
-}
-
-/**
- * Pop ups the URL Dialog in the Google Document
- */
-function urlDialog(){
-  var html = HtmlService.createHtmlOutputFromFile('URLDialog')
-      .setSandboxMode(HtmlService.SandboxMode.IFRAME)
-      .setWidth(200)
-      .setHeight(100);
-  DocumentApp.getUi()
-      .showModalDialog(html, "Copied Document");
-}
-
-/**
- * Attempts to retrieve URL
- * Returns non-URL if property does not exist
- * Returns URL if URL property exists/has been set
- */
-function retrieveURL(){
-  var documentProperties = PropertiesService.getDocumentProperties();
-  var keys = documentProperties.getKeys();
-  var isURL = false;
-  var URL = null;
-  for(var i = 0 ; i <keys.length ; i++){
-    if(keys[i] == "URL"){
-      URL = documentProperties.getProperty("URL");
-      break
-    }
-  }
-  return URL;
-}
-
-
-
-
-
-function goSave(){
-  var documentProperties = PropertiesService.getDocumentProperties();
-  documentProperties.deleteProperty("URL");
-  var id = getNewDocId();
-  var oldId = DocumentApp.getActiveDocument().getId();
-  var comments = [];
-  var pageToken = "";
-  var startTime = (new Date()).getTime();
-  
-  do{
-    var commentRes = getComments(oldId, pageToken);
-    comments = comments.concat(commentRes.items);
-    pageToken = commentRes.nextPageToken;
-    var currTime = (new Date()).getTime();
-    if(currTime - startTime > MAX_RUNNING_TIME){
-      var properties = {};
-      properties["pageToken"] = pageToken;
-      properties["newDocId"] = id;
-      documentProperties.setProperties(properties);
-      appendCommentsAndReplies(id, comments);
-      var endTime = (new Date()).getTime();
-      ScriptApp.newTrigger("pickOffFromLeftOff")
-               .timeBased()
-               .at(new Date(endTime+TIME_TO_WAIT))
-               .create();
-      return;
-    }
-  }while(pageToken != undefined);
-  appendCommentsAndReplies(id, comments);
-  documentProperties.setProperty("URL", DocumentApp.openById(id).getUrl());
-  urlDialog();
 }
 
