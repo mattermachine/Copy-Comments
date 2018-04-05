@@ -58,16 +58,27 @@ function resume(){
   var pageToken = props["pageToken"];
   //var activeRow = props["activeRow"];
   var activeRow = sheet.getRange("G2").getValue();
-  var docRows = sheet.getRange("D5:G1000")
+  var docRows = sheet.getRange("D5:G3000")
   var id = docRows.getCell(activeRow, 1).getValue();
   var oldId = docRows.getCell(activeRow, 2).getValue();
 
-  if (oldId == "") {
+  if (oldId == "" && id == "") {
+    //sheet.getRange("G2").setValue(activeRow+1);
+    //resume();
     return;
   }
 
-  if (DriveApp.getFileById(id).getMimeType() == "application/vnd.google-apps.folder") {
+  var mimeType = DriveApp.getFileById(id).getMimeType();
+
+  if (mimeType == "application/vnd.google-apps.folder") {
     docRows.getCell(activeRow, 4).setValue("folder");
+    sheet.getRange("G2").setValue(activeRow+1);
+    resume();
+    return;
+  }
+
+  if (mimeType != "application/vnd.google-apps.document") {
+    docRows.getCell(activeRow, 4).setValue(mimeType);
     sheet.getRange("G2").setValue(activeRow+1);
     resume();
     return;
